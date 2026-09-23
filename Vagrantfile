@@ -125,13 +125,6 @@ EOF
         sudo -u www-data rm -f .env
         sudo -u www-data cp .env.development .env
         
-        # If an existing APP_KEY was found, use it; otherwise, generate a new one
-        if [ -n "$EXISTING_KEY" ]; then
-            sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
-        else
-            sudo -u www-data php artisan key:generate
-        fi
-
         # Re Inject the database credentials using sed
         sudo -u www-data sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
         sudo -u www-data sed -i 's/DB_DATABASE=.*/DB_DATABASE=trixdevdb/' .env
@@ -139,6 +132,14 @@ EOF
         sudo -u www-data sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=!trixDB2026/' .env
 
         sudo -u www-data composer install
+
+        # If an existing APP_KEY was found, use it; otherwise, generate a new one
+        if [ -n "$EXISTING_KEY" ]; then
+            sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
+        else
+            sudo -u www-data php artisan key:generate
+        fi
+
         
         sudo -u www-data php artisan migrate --force
 
@@ -152,6 +153,7 @@ EOF
         sudo -u www-data php artisan config:clear
         sudo -u www-data php artisan cache:clear
         sudo -u www-data php artisan route:clear
+        sudo -u www-data php artisan optimize:clear
 
         # Vue.js deployment
         if [ -d "/var/www/trix_app/.git" ]; then
