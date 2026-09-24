@@ -9,6 +9,8 @@ Vagrant.configure("2") do |config|
    
     config.vm.network "forwarded_port", guest: 80, host: 8080
     config.vm.network "forwarded_port", guest: 3000, host: 3000
+    # Webhook listener port for Bitbucket webhook client
+    config.vm.network "forwarded_port", guest: 9000, host: 9000
 
     config.vm.provision "file", source: "~/.ssh/bitbucket_personal", destination: "/tmp/id_ed25519"
 
@@ -19,6 +21,9 @@ Vagrant.configure("2") do |config|
         sed -i '43d' /etc/apt/sources.list
         apt-get update
 
+        
+        # Install the webhook listener
+        apt-get install -y webhook  
         # Install git
         apt-get install -y git software-properties-common curl unzip
 
@@ -97,11 +102,12 @@ EOF
         rm -f /etc/nginx/sites-enabled/default
         
         systemctl restart nginx php8.2-fpm
-    SHELL
+        
 
-    # Run this provisioning script every time the VM is started to ensure the environment is up-to-date
-    config.vm.provision "shell", run: "always", inline: <<-SHELL
-       
+        # Create deployment script which contains the logic to pull the latest code from Bitbucket repositories for both Laravel and Vue.js applications and build them accordingly.
+        cat <<'EOF' > /var/www/deploy.sh
+        #!/bin/bash
+        echo "Deployment triggered by Bitbucket at $(date)" >> /var/www/deploy.log
         # API deployment
         if [ -d "/var/www/trix_api/.git" ]; then
             echo "API Repository found. Pulling latest code..."
@@ -113,7 +119,18 @@ EOF
             sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_api.git /var/www/trix_api
         fi
 
+        # Vue.js deployment
+        if [ -d "/var/www/trix_app/.git" ]; then
+            echo "Vue Repository found. Pulling latest code..."
+            cd /var/www/trix_app
+            sudo -u www-data git checkout develop
+            sudo -u www-data git pull origin develop
+        else
+            echo "Vue Repository missing. Cloning from Bitbucket..."
+            sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git /var/www/trix_app
+        fi
 
+        # Laravel Application Build and Database Migration
         cd /var/www/trix_api
 
         # Checking for existing APP_KEY in .env file
@@ -137,7 +154,7 @@ EOF
         if [ -n "$EXISTING_KEY" ]; then
             sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
         else
-            sudo -u www-data php artisan key:generate
+            sudo -u www-data php artisan key:generate --force
         fi
 
         
@@ -155,17 +172,9 @@ EOF
         sudo -u www-data php artisan route:clear
         sudo -u www-data php artisan optimize:clear
 
-        # Vue.js deployment
-        if [ -d "/var/www/trix_app/.git" ]; then
-            echo "Vue Repository found. Pulling latest code..."
-            cd /var/www/trix_app
-            sudo -u www-data git checkout develop
-            sudo -u www-data git pull origin develop
-        else
-            echo "Vue Repository missing. Cloning from Bitbucket..."
-            sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git /var/www/trix_app
-        fi
+        # Laravel Application Build and Database Migration End
 
+        # Vue.js Application Build 
         cd /var/www/trix_app
         sudo -u www-data rm -f .env
         sudo -u www-data cp .env.development .env
@@ -173,5 +182,40 @@ EOF
         sudo -u www-data npm install
         sudo -u www-data rm -rf dist
         sudo -u www-data npm run build
+
+        # Vue.js Application Build End
+EOF
+        # Set permissions for the deployment script 
+        chown www-data:www-data /var/www/deploy.sh
+        chmod +x /var/www/deploy.sh
+
+        # Webhook Configuration which will trigger the deployment script when a request with the correct token is received
+        cat <<'EOF' > /etc/webhook.conf
+        [
+            {
+                "id": "trix-deploy",
+                "execute-command": "/var/www/deploy.sh",
+                "command-working-directory": "/var/www",
+                "trigger-rule": {
+                "match": {
+                    "type": "value",
+                    "value": "my-super-secret-token",
+                    "parameter": {
+                    "source": "url",
+                    "name": "token"
+                    }
+                }
+                }
+            }
+        ]
+EOF
+        systemctl restart webhook
+    SHELL
+
+    # Run this provisioning script every time the VM is started to ensure the environment is up-to-date
+    config.vm.provision "shell", run: "always", inline: <<-SHELL
+        # Run the deployment script on every boot to ensure the latest code is pulled and built
+        echo "Running deployment script on boot..."
+        bash /var/www/deploy.sh
     SHELL
 end
