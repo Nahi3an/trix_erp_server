@@ -194,23 +194,37 @@ EOF
 
         # Webhook Configuration which will trigger the deployment script when a request with the correct token is received
         cat <<'EOF' > /etc/webhook.conf
-        [
-            {
-                "id": "trix-deploy",
-                "execute-command": "/var/www/deploy.sh",
-                "command-working-directory": "/var/www",
-                "trigger-rule": {
-                "match": {
-                    "type": "value",
-                    "value": "my-super-secret-token",
-                    "parameter": {
-                    "source": "url",
-                    "name": "token"
-                    }
-                }
-                }
+[
+  {
+    "id": "trix-deploy",
+    "execute-command": "/var/www/deploy.sh",
+    "command-working-directory": "/var/www",
+    "trigger-rule": {
+      "and": [
+        {
+          "match": {
+            "type": "value",
+            "value": "my-super-secret-token",
+            "parameter": {
+              "source": "url",
+              "name": "token"
             }
-        ]
+          }
+        },
+        {
+          "match": {
+            "type": "value",
+            "value": "develop",
+            "parameter": {
+              "source": "payload",
+              "name": "push.changes.0.new.name"
+            }
+          }
+        }
+      ]
+    }
+  }
+]
 EOF
         systemctl restart webhook
     SHELL
