@@ -105,85 +105,88 @@ EOF
         
 
         # Create deployment script which contains the logic to pull the latest code from Bitbucket repositories for both Laravel and Vue.js applications and build them accordingly.
+        # Create deployment script which contains the logic to pull the latest code...
         cat <<'EOF' > /var/www/deploy.sh
-        #!/bin/bash
-        echo "Deployment triggered by Bitbucket at $(date)" >> /var/www/deploy.log
-        # API deployment
-        if [ -d "/var/www/trix_api/.git" ]; then
-            echo "API Repository found. Pulling latest code..."
-            cd /var/www/trix_api
-            sudo -u www-data git checkout develop
-            sudo -u www-data git pull origin develop
-        else
-            echo "API Repository missing. Cloning from Bitbucket..."
-            sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_api.git /var/www/trix_api
-        fi
+#!/bin/bash
 
-        # Vue.js deployment
-        if [ -d "/var/www/trix_app/.git" ]; then
-            echo "Vue Repository found. Pulling latest code..."
-            cd /var/www/trix_app
-            sudo -u www-data git checkout develop
-            sudo -u www-data git pull origin develop
-        else
-            echo "Vue Repository missing. Cloning from Bitbucket..."
-            sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git /var/www/trix_app
-        fi
+# Redirect all script output and errors to the log file automatically
+exec >> /var/www/deploy.log 2>&1
 
-        # Laravel Application Build and Database Migration
-        cd /var/www/trix_api
+echo "==================================================="
+echo "🚀 Deployment started at $(date)"
+echo "==================================================="
 
-        # Checking for existing APP_KEY in .env file
-        EXISTING_KEY=""
-        if [ -f ".env" ] && grep -q "^APP_KEY=" .env; then
-            EXISTING_KEY=$(grep "^APP_KEY=" .env | cut -d '=' -f2-)
-        fi
+echo "--- [1/4] Updating Laravel API Repository ---"
+if [ -d "/var/www/trix_api/.git" ]; then
+    echo "API Repository found. Pulling latest code..."
+    cd /var/www/trix_api
+    sudo -u www-data git checkout develop
+    sudo -u www-data git pull origin develop
+else
+    echo "API Repository missing. Cloning from Bitbucket..."
+    sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_api.git /var/www/trix_api
+fi
 
-        sudo -u www-data rm -f .env
-        sudo -u www-data cp .env.development .env
-        
-        # Re Inject the database credentials using sed
-        sudo -u www-data sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
-        sudo -u www-data sed -i 's/DB_DATABASE=.*/DB_DATABASE=trixdevdb/' .env
-        sudo -u www-data sed -i 's/DB_USERNAME=.*/DB_USERNAME=admin/' .env
-        sudo -u www-data sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=!trixDB2026/' .env
+echo "--- [2/4] Updating Vue.js App Repository ---"
+if [ -d "/var/www/trix_app/.git" ]; then
+    echo "Vue Repository found. Pulling latest code..."
+    cd /var/www/trix_app
+    sudo -u www-data git checkout develop
+    sudo -u www-data git pull origin develop
+else
+    echo "Vue Repository missing. Cloning from Bitbucket..."
+    sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git /var/www/trix_app
+fi
 
-        sudo -u www-data composer install
+echo "--- [3/4] Building Laravel API and Migrating Database ---"
+cd /var/www/trix_api
 
-        # If an existing APP_KEY was found, use it; otherwise, generate a new one
-        if [ -n "$EXISTING_KEY" ]; then
-            sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
-        else
-            sudo -u www-data php artisan key:generate --force
-        fi
+EXISTING_KEY=""
+if [ -f ".env" ] && grep -q "^APP_KEY=" .env; then
+    EXISTING_KEY=$(grep "^APP_KEY=" .env | cut -d '=' -f2-)
+fi
 
-        
-        sudo -u www-data php artisan migrate --force
+sudo -u www-data rm -f .env
+sudo -u www-data cp .env.development .env
 
-        if [ ! -f "/var/www/trix_api/.db_seeded" ]; then
-            echo "First run detected: Migrating and seeding the database..."
-           
-            sudo -u www-data php artisan db:seed --force
-            sudo -u www-data touch /var/www/trix_api/.db_seeded
-        fi
+sudo -u www-data sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+sudo -u www-data sed -i 's/DB_DATABASE=.*/DB_DATABASE=trixdevdb/' .env
+sudo -u www-data sed -i 's/DB_USERNAME=.*/DB_USERNAME=admin/' .env
+sudo -u www-data sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=!trixDB2026/' .env
 
-        sudo -u www-data php artisan config:clear
-        sudo -u www-data php artisan cache:clear
-        sudo -u www-data php artisan route:clear
-        sudo -u www-data php artisan optimize:clear
+sudo -u www-data composer install
 
-        # Laravel Application Build and Database Migration End
+if [ -n "$EXISTING_KEY" ]; then
+    sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
+else
+    sudo -u www-data php artisan key:generate --force
+fi
 
-        # Vue.js Application Build 
-        cd /var/www/trix_app
-        sudo -u www-data rm -f .env
-        sudo -u www-data cp .env.development .env
-        # rm -rf node_modules
-        sudo -u www-data npm install
-        sudo -u www-data rm -rf dist
-        sudo -u www-data npm run build
+sudo -u www-data php artisan migrate --force
 
-        # Vue.js Application Build End
+if [ ! -f "/var/www/trix_api/.db_seeded" ]; then
+    echo "First run detected: Migrating and seeding the database..."
+    sudo -u www-data php artisan db:seed --force
+    sudo -u www-data touch /var/www/trix_api/.db_seeded
+fi
+
+sudo -u www-data php artisan config:clear
+sudo -u www-data php artisan cache:clear
+sudo -u www-data php artisan route:clear
+sudo -u www-data php artisan optimize:clear
+
+echo "--- [4/4] Building Vue.js Frontend ---"
+cd /var/www/trix_app
+sudo -u www-data rm -f .env
+sudo -u www-data cp .env.development .env
+sudo -u www-data npm install
+sudo -u www-data rm -rf dist
+sudo -u www-data npm run build
+
+echo "==================================================="
+echo "✅ Deployment completed successfully at $(date)"
+echo "==================================================="
+echo ""
 EOF
         # Set permissions for the deployment script 
         chown www-data:www-data /var/www/deploy.sh
