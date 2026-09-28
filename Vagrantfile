@@ -1,4 +1,10 @@
 Vagrant.configure("2") do |config|
+
+    db_name = ENV['TRIX_DB_NAME']
+    db_user = ENV['TRIX_DB_USER']
+    db_pass = ENV['TRIX_DB_PASS']
+    webhook_secret= ENV['CI_CD_WEBHOOK_SECRET']
+
     config.vm.box = "ubuntu/jammy64"
 
     config.vm.provider "virtualbox" do |vb|
@@ -15,7 +21,12 @@ Vagrant.configure("2") do |config|
     config.vm.provision "file", source: "~/.ssh/bitbucket_personal", destination: "/tmp/id_ed25519"
 
     # One time provisioning for initial setup
-    config.vm.provision "shell", inline: <<-SHELL
+    config.vm.provision "shell", env: { 
+        "VM_DB_NAME" => db_name, 
+        "VM_DB_USER" => db_user, 
+        "VM_DB_PASS" => db_pass,
+        "VM_WEBHOOK_SECRET" => webhook_secret,
+      }, inline: <<-SHELL
         # Update and install essential packages
         export DEBIAN_FRONTEND=noninteractive
         sed -i '43d' /etc/apt/sources.list
@@ -41,11 +52,20 @@ Vagrant.configure("2") do |config|
 
         # Database Setup
         apt-get install -y mysql-server
-        mysql -u root -e "CREATE DATABASE IF NOT EXISTS trixdevdb;"
-        mysql -u root -e "CREATE USER IF NOT EXISTS 'admin'@'localhost' IDENTIFIED BY '!trixDB2026';"
-        mysql -u root -e "GRANT ALL PRIVILEGES ON trixdevdb.* TO 'admin'@'localhost';"
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS ${VM_DB_NAME};"
+        mysql -u root -e "CREATE USER IF NOT EXISTS '${VM_DB_USER}'@'localhost' IDENTIFIED BY '${VM_DB_PASS}';"
+        mysql -u root -e "GRANT ALL PRIVILEGES ON ${VM_DB_NAME}.* TO '${VM_DB_USER}'@'localhost';"
         mysql -u root -e "FLUSH PRIVILEGES;"
-    
+
+        # Save credentials securely to a hidden file for the deploy script to use later
+        cat <<CREDS > /var/www/.db_credentials
+DB_DATABASE=${VM_DB_NAME}
+DB_USERNAME=${VM_DB_USER}
+DB_PASSWORD=${VM_DB_PASS}
+CREDS
+        chown www-data:www-data /var/www/.db_credentials
+        chmod 600 /var/www/.db_credentials
+
         # Php, Laravel, Nginx & Composer Setup
         apt-get install -y software-properties-common curl unzip
         add-apt-repository ppa:ondrej/php -y
@@ -73,7 +93,7 @@ Vagrant.configure("2") do |config|
             listen 80;
             server_name localhost;
             
-            root /var/www/trix_api/public;
+            root /var/www/live_site_api/public;
             index index.php;
 
             location / {
@@ -89,7 +109,7 @@ Vagrant.configure("2") do |config|
             listen 3000;
             server_name localhost;
             
-            root /var/www/trix_app/dist;
+            root /var/www/live_site_app/dist;
             index index.html;
 
             location / {
@@ -112,62 +132,50 @@ EOF
 # Redirect all script output and errors to the log file automatically
 exec >> /var/www/deploy.log 2>&1
 
+RELEASE_NAME=$(date +%Y%m%d_%H%M%S)
+API_RELEASE_DIR="/var/www/releases/${RELEASE_NAME}_api"
+APP_RELEASE_DIR="/var/www/releases/${RELEASE_NAME}_app"
+
 echo "==================================================="
-echo "🚀 Deployment started at $(date)"
+echo "🚀 Deployment started at $(RELEASE_NAME)"
 echo "==================================================="
 
-echo "--- [1/4] Updating Laravel API Repository ---"
-if [ -d "/var/www/trix_api/.git" ]; then
-    echo "API Repository found. Pulling latest code..."
-    cd /var/www/trix_api
-    sudo -u www-data git checkout develop
-    sudo -u www-data git pull origin develop
-else
-    echo "API Repository missing. Cloning from Bitbucket..."
-    sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_api.git /var/www/trix_api
-fi
+sudo -u www-data mkdir -p /var/www/releases
 
-echo "--- [2/4] Updating Vue.js App Repository ---"
-if [ -d "/var/www/trix_app/.git" ]; then
-    echo "Vue Repository found. Pulling latest code..."
-    cd /var/www/trix_app
-    sudo -u www-data git checkout develop
-    sudo -u www-data git pull origin develop
-else
-    echo "Vue Repository missing. Cloning from Bitbucket..."
-    sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git /var/www/trix_app
-fi
+echo "--- [1/6] Cloning Fresh API Repository ---"
+sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_api.git $API_RELEASE_DIR
 
-echo "--- [3/4] Building Laravel API and Migrating Database ---"
-cd /var/www/trix_api
+echo "--- [2/6] Cloning Fresh Vue.js Repository ---"
+sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app.git $APP_RELEASE_DIR
 
-EXISTING_KEY=""
-if [ -f ".env" ] && grep -q "^APP_KEY=" .env; then
-    EXISTING_KEY=$(grep "^APP_KEY=" .env | cut -d '=' -f2-)
-fi
-
-sudo -u www-data rm -f .env
-sudo -u www-data cp .env.development .env
-
-sudo -u www-data sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
-sudo -u www-data sed -i 's/DB_DATABASE=.*/DB_DATABASE=trixdevdb/' .env
-sudo -u www-data sed -i 's/DB_USERNAME=.*/DB_USERNAME=admin/' .env
-sudo -u www-data sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=!trixDB2026/' .env
+echo "--- [3/6] Building Laravel API ---"
+cd $API_RELEASE_DIR
 
 sudo -u www-data composer install
 
-if [ -n "$EXISTING_KEY" ]; then
-    sudo -u www-data sed -i "s|^APP_KEY=.*|APP_KEY=$EXISTING_KEY|" .env
+if [ -f "/var/www/live_site_api/.env" ]; then
+    echo "Transferring existing .env (with APP_KEY) from live site..."
+    sudo -u www-data cp /var/www/live_site_api/.env .env
 else
+    echo "First deployment: Creating fresh .env and generating key..."
+    sudo -u www-data cp .env.development .env
+    sudo -u www-data sed -i "s/DB_HOST=.*/DB_HOST=127.0.0.1/" .env
+    source /var/www/.db_credentials
+            
+   # Use pipes (|) as delimiters and wrap the output in escaped quotes (\")
+    sudo -u www-data sed -i "s|^DB_DATABASE=.*|DB_DATABASE=\"$DB_DATABASE\"|" .env
+    sudo -u www-data sed -i "s|^DB_USERNAME=.*|DB_USERNAME=\"$DB_USERNAME\"|" .env
+    sudo -u www-data sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=\"$DB_PASSWORD\"|" .env
+    
     sudo -u www-data php artisan key:generate --force
 fi
 
 sudo -u www-data php artisan migrate --force
 
-if [ ! -f "/var/www/trix_api/.db_seeded" ]; then
+if [ ! -f "/var/www/.db_seeded" ]; then
     echo "First run detected: Migrating and seeding the database..."
     sudo -u www-data php artisan db:seed --force
-    sudo -u www-data touch /var/www/trix_api/.db_seeded
+    sudo -u www-data touch /var/www/.db_seeded
 fi
 
 sudo -u www-data php artisan config:clear
@@ -175,13 +183,24 @@ sudo -u www-data php artisan cache:clear
 sudo -u www-data php artisan route:clear
 sudo -u www-data php artisan optimize:clear
 
-echo "--- [4/4] Building Vue.js Frontend ---"
-cd /var/www/trix_app
-sudo -u www-data rm -f .env
+echo "--- [4/6] Building Vue.js Frontend ---"
+cd $APP_RELEASE_DIR
 sudo -u www-data cp .env.development .env
 sudo -u www-data npm install
-sudo -u www-data rm -rf dist
 sudo -u www-data npm run build
+
+
+echo "--- [5/6] The Instant Flip (Symlink) ---"
+sudo -u www-data ln -sfn $API_RELEASE_DIR /var/www/live_site_api
+sudo -u www-data ln -sfn $APP_RELEASE_DIR /var/www/live_site_app
+
+systemctl reload php8.2-fpm
+
+echo "--- [6/6] Cleaning up old releases ---"
+cd /var/www/releases
+ls -dt *_api | tail -n +4 | xargs -r rm -rf
+ls -dt *_app | tail -n +4 | xargs -r rm -rf
+
 
 echo "==================================================="
 echo "✅ Deployment completed successfully at $(date)"
@@ -193,7 +212,7 @@ EOF
         chmod +x /var/www/deploy.sh
 
         # Webhook Configuration which will trigger the deployment script when a request with the correct token is received
-        cat <<'EOF' > /etc/webhook.conf
+        cat <<EOF > /etc/webhook.conf
 [
   {
     "id": "trix-deploy",
@@ -204,7 +223,7 @@ EOF
         {
           "match": {
             "type": "value",
-            "value": "my-super-secret-token",
+            "value": "${VM_WEBHOOK_SECRET}",
             "parameter": {
               "source": "url",
               "name": "token"
