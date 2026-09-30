@@ -167,6 +167,22 @@ sudo -u www-data git clone -b develop git@bitbucket.org:haque1430626042/trix_app
 echo "--- [3/6] Building Laravel API ---"
 cd $API_RELEASE_DIR
 
+# Shared Storage Setup
+SHARED_STORAGE="/var/www/shared_storage"
+
+if [ ! -d "$SHARED_STORAGE" ]; then
+    echo "First run: Creating persistent shared storage..."
+    sudo -u www-data cp -r $API_RELEASE_DIR/storage /var/www/shared_storage
+fi
+
+# Deleting the laravel storage to avoid name conflict
+sudo -u www-data rm -rf $API_RELEASE_DIR/storage
+
+# Add symlink laravel storage -> shared storage
+sudo -u www-data ln -sfn $SHARED_STORAGE $API_RELEASE_DIR/storage
+
+echo "Shared storage setup done"
+
 sudo -u www-data composer install
 
 if [ -f "/var/www/live_site_api/.env" ]; then
@@ -198,6 +214,7 @@ sudo -u www-data php artisan config:clear
 sudo -u www-data php artisan cache:clear
 sudo -u www-data php artisan route:clear
 sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan storage:link
 
 echo "--- [4/6] Building Vue.js Frontend ---"
 cd $APP_RELEASE_DIR
