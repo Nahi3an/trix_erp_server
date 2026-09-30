@@ -137,8 +137,24 @@ API_RELEASE_DIR="/var/www/releases/${RELEASE_NAME}_api"
 APP_RELEASE_DIR="/var/www/releases/${RELEASE_NAME}_app"
 
 echo "==================================================="
-echo "🚀 Deployment started at $(RELEASE_NAME)"
+echo "Deployment started at $(date)"
 echo "==================================================="
+echo "--- [0/6] Waiting for internet connection and DNS resolution... ---"
+MAX_ATTEMPTS=24 # 2 minutes max wait time
+ATTEMPT=0
+
+# Ping Google because Bitbucket firewalls block ping requests
+while ! ping -c 1 google.com &> /dev/null; do
+    if [ $ATTEMPT -ge $MAX_ATTEMPTS ]; then
+        echo "ERROR: Network timeout after 2 minutes. Aborting deployment."
+        exit 1
+    fi
+    echo "Network not ready, waiting 5 seconds..."
+    sleep 5
+    ATTEMPT=$((ATTEMPT+1))
+done
+echo "Network connection established!"
+
 
 sudo -u www-data mkdir -p /var/www/releases
 
@@ -203,7 +219,7 @@ ls -dt *_app | tail -n +4 | xargs -r rm -rf
 
 
 echo "==================================================="
-echo "✅ Deployment completed successfully at $(date)"
+echo "Deployment completed successfully at $(date)"
 echo "==================================================="
 echo ""
 EOF
